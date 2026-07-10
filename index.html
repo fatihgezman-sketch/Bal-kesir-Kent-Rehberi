@@ -15,7 +15,6 @@
 <meta name="apple-mobile-web-app-title" content="Balıkesir Kent Rehberi">
 
 <link rel="preload" href="data/index.json" as="fetch" crossorigin="anonymous">
-<link rel="preload" href="data/search-index.json" as="fetch" crossorigin="anonymous">
 
 <style>
   :root{
@@ -519,6 +518,7 @@
   var indexPromise = fetchJson(DATA_BASE + 'index.json');
   var searchIndexPromise = null;
   var mahalleDataCache = Object.create(null);
+  var pickerItemsCache = Object.create(null);
   var mahalleRequestId = 0;
   var reverseNameCache = null;
 
@@ -551,6 +551,8 @@
   // ---------- smart unified search ----------
   // Memoization: Normalize işlemlerini hızlandırır
   var normalizeCache = {};
+  var normalizeCacheSize = 0;
+  var NORMALIZE_CACHE_LIMIT = 4000;
   
   function normalizeTr(s){
     if (!s) return '';
@@ -563,7 +565,12 @@
     out = out.replace(/[^a-z0-9 ]+/g, ' ');
     out = out.replace(/\s+/g, ' ').trim();
     
+    if (normalizeCacheSize >= NORMALIZE_CACHE_LIMIT){
+      normalizeCache = {};
+      normalizeCacheSize = 0;
+    }
     normalizeCache[s] = out;
+    normalizeCacheSize++;
     return out;
   }
 
@@ -698,7 +705,7 @@
     });
   }
 
-  function runAddressSearch(rawQuery){
+  function runAddressSearchFallback(rawQuery){
     if (!rawQuery || !rawQuery.trim()){
       showToast('Bir adres yaz ya da söyle.');
       return;
@@ -755,6 +762,58 @@
         showSearchResultsSheet(results.slice(0, 8), parsed);
       }
     });
+  }
+
+  var searchWorker = null;
+  var searchRequestId = 0;
+  var lastSearchQuery = '';
+
+  function handleSearchResult(result){
+    if (!result.results.length){
+      showToast('Sonuç bulunamadı. Farklı yazmayı ya da söylemeyi dene.');
+      return;
+    }
+    var top = result.results[0];
+    var second = result.results[1];
+    var confident = top.score >= 8000 && (!second || (top.score - second.score) >= 1500);
+    if (confident) resolveAndGo(top, result.parsed.no, result.parsed.blok, true);
+    else showSearchResultsSheet(result.results, result.parsed);
+  }
+
+  function runAddressSearch(rawQuery){
+    if (!rawQuery || !rawQuery.trim()){
+      showToast('Bir adres yaz ya da söyle.');
+      return;
+    }
+    if (!window.Worker){
+      runAddressSearchFallback(rawQuery);
+      return;
+    }
+    if (!searchWorker){
+      try {
+        searchWorker = new Worker('search-worker.js');
+        searchWorker.onmessage = function(event){
+          if (event.data.id !== searchRequestId) return;
+          if (event.data.error){
+            searchWorker.terminate();
+            searchWorker = null;
+            runAddressSearchFallback(lastSearchQuery);
+            return;
+          }
+          handleSearchResult(event.data.result);
+        };
+        searchWorker.onerror = function(){
+          searchWorker = null;
+          runAddressSearchFallback(lastSearchQuery);
+        };
+      } catch (error) {
+        runAddressSearchFallback(rawQuery);
+        return;
+      }
+    }
+    lastSearchQuery = rawQuery;
+    searchRequestId++;
+    searchWorker.postMessage({ id: searchRequestId, query: rawQuery });
   }
 
   els.smartInput.addEventListener('keydown', function(e){
@@ -957,7 +1016,12 @@
     });
   }
 
-  function renderList(items, query){
+  var LIST_BATCH_SIZE = 100;
+  var listRenderState = null;
+
+  function renderList(items, query, limit){
+    limit = limit || LIST_BATCH_SIZE;
+    listRenderState = { items: items, query: query, limit: limit };
     els.sheetList.innerHTML = '';
     if (!items.length){
       var empty = document.createElement('div');
@@ -967,7 +1031,7 @@
       return;
     }
     var frag = document.createDocumentFragment();
-    items.forEach(function(item){
+    items.slice(0, limit).forEach(function(item){
       var row = document.createElement('div');
       row.className = 'sheet-item';
       row.innerHTML = '<span>' + highlight(item.label, query) + '</span>' + (item.meta ? '<span class="meta">'+escapeHtml(item.meta)+'</span>' : '');
@@ -978,7 +1042,21 @@
       frag.appendChild(row);
     });
     els.sheetList.appendChild(frag);
+    if (items.length > limit){
+      var more = document.createElement('div');
+      more.className = 'sheet-empty';
+      more.textContent = (items.length - limit) + ' sonuç daha var. Kaydırarak yükle.';
+      els.sheetList.appendChild(more);
+    }
   }
+
+  els.sheetList.addEventListener('scroll', function(){
+    if (!listRenderState || listRenderState.items.length <= listRenderState.limit) return;
+    var closeToEnd = els.sheetList.scrollTop + els.sheetList.clientHeight >= els.sheetList.scrollHeight - 120;
+    if (closeToEnd){
+      renderList(listRenderState.items, listRenderState.query, listRenderState.limit + LIST_BATCH_SIZE);
+    }
+  });
 
   // Debounce (Gecikme) eklenmiş arama dinleyicisi
   var searchTimeout;
@@ -1022,10 +1100,15 @@
     if (els.fieldMahalle.classList.contains('disabled')) return;
     indexPromise.then(function(idx){
       // Sıralama operasyonunu azalttık, (Eğer JSON sıralı ise .sort'u da kaldırabilirsin)
-      var mahalleler = Object.keys(idx[state.ilce]).sort(function(a,b){ return a.localeCompare(b,'tr'); });
-      var items = mahalleler.map(function(m){
-        return { label: m, searchText: m.toLocaleLowerCase('tr'), value: m };
-      });
+      var cacheKey = 'mahalle:' + state.ilce;
+      var items = pickerItemsCache[cacheKey];
+      if (!items){
+        var mahalleler = Object.keys(idx[state.ilce]).sort(function(a,b){ return a.localeCompare(b,'tr'); });
+        items = mahalleler.map(function(m){
+          return { label: m, searchText: m.toLocaleLowerCase('tr'), value: m };
+        });
+        pickerItemsCache[cacheKey] = items;
+      }
       openSheet({
         title: 'Mahalle Seçiniz',
         searchPlaceholder: 'Mahalle ara...',
@@ -1059,11 +1142,16 @@
       showToast('Veriler yükleniyor, birazdan tekrar dene.');
       return;
     }
-    var sokaklar = Object.keys(state.mahalleData).sort(function(a,b){ return a.localeCompare(b,'tr'); });
-    var items = sokaklar.map(function(sk){
-      var count = state.mahalleData[sk].length;
-      return { label: sk, searchText: sk.toLocaleLowerCase('tr'), value: sk, meta: count + ' adres' };
-    });
+    var cacheKey = 'sokak:' + state.ilce + ':' + state.mahalle;
+    var items = pickerItemsCache[cacheKey];
+    if (!items){
+      var sokaklar = Object.keys(state.mahalleData).sort(function(a,b){ return a.localeCompare(b,'tr'); });
+      items = sokaklar.map(function(sk){
+        var count = state.mahalleData[sk].length;
+        return { label: sk, searchText: sk.toLocaleLowerCase('tr'), value: sk, meta: count + ' adres' };
+      });
+      pickerItemsCache[cacheKey] = items;
+    }
     openSheet({
       title: 'Sokak / Cadde Seçiniz',
       searchPlaceholder: 'Sokak ara (harf veya sayı)...',
@@ -1256,7 +1344,9 @@
   // ---------- service worker ----------
   if ('serviceWorker' in navigator){
     window.addEventListener('load', function(){
-      navigator.serviceWorker.register('sw.js').catch(function(){});
+      var register = function(){ navigator.serviceWorker.register('sw.js').catch(function(){}); };
+      if ('requestIdleCallback' in window) window.requestIdleCallback(register, { timeout: 3000 });
+      else setTimeout(register, 1000);
     });
   }
 })();

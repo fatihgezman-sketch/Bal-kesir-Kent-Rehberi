@@ -1,8 +1,9 @@
-const CACHE_NAME = 'gzmn-v4';
+const CACHE_NAME = 'gzmn-v5';
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const APP_SHELL = [
   './',
   './index.html',
+  './search-worker.js',
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png',
