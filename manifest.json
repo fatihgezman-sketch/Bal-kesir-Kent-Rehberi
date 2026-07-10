@@ -1,0 +1,26 @@
+{
+  "name": "Balıkesir Kent Rehberi",
+  "short_name": "Balıkesir Kent Rehberi",
+  "description": "Balıkesir Altıeylül ve Karesi ilçeleri için mahalle, sokak ve kapı numarasına göre hızlı adres ve konum rehberi.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0E0F11",
+  "theme_color": "#0E0F11",
+  "lang": "tr",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
